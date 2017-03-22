@@ -46,6 +46,9 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <sys/ioctl.h>
 
+//Camera to use
+#define CAMERA_NUM 1
+
 //If CAPTURE is 1, images are saved to file.
 //If 0, the ISP and render are hooked up instead
 #define CAPTURE	0
@@ -470,6 +473,13 @@ int main(int argc, char** args) {
 	}
 	vcos_log_error("Set pack to %d, unpack to %d", rx_cfg.unpack, rx_cfg.pack);
 	status = mmal_port_parameter_set(output, &rx_cfg.hdr);
+	if(status != MMAL_SUCCESS)
+	{
+		vcos_log_error("Failed to set cfg");
+		goto component_destroy;
+	}
+
+	status = mmal_port_parameter_set_int32(output, MMAL_PARAMETER_CAMERA_NUM, CAMERA_NUM);
 	if(status != MMAL_SUCCESS)
 	{
 		vcos_log_error("Failed to set cfg");
