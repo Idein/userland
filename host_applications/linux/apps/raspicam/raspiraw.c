@@ -47,7 +47,9 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <sys/ioctl.h>
 
 //Camera to use
-#define CAMERA_NUM 1
+//-1 for default
+//On CM: 0=CAM0, 1=CAM1
+#define CAMERA_NUM -1
 
 //If CAPTURE is 1, images are saved to file.
 //If 0, the ISP and render are hooked up instead
@@ -479,11 +481,14 @@ int main(int argc, char** args) {
 		goto component_destroy;
 	}
 
-	status = mmal_port_parameter_set_int32(output, MMAL_PARAMETER_CAMERA_NUM, CAMERA_NUM);
-	if(status != MMAL_SUCCESS)
-	{
-		vcos_log_error("Failed to set cfg");
-		goto component_destroy;
+	if (CAMERA_NUM != -1) {
+		vcos_log_error("Set camera_num to %d", CAMERA_NUM);
+		status = mmal_port_parameter_set_int32(output, MMAL_PARAMETER_CAMERA_NUM, CAMERA_NUM);
+		if(status != MMAL_SUCCESS)
+		{
+			vcos_log_error("Failed to set camera_num");
+			goto component_destroy;
+		}
 	}
 
 	status = mmal_component_enable(rawcam);
