@@ -46,6 +46,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <sys/ioctl.h>
 
+#include "raw_header.h"
+
 //Camera to use
 //-1 for default
 //On CM: 0=CAM0, 1=CAM1
@@ -54,6 +56,11 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //If CAPTURE is 1, images are saved to file.
 //If 0, the ISP and render are hooked up instead
 #define CAPTURE	0
+//If CAPTURE is 1, and WRITE_HEADER is 1, then
+//the raw header describing the frame.
+#define WRITE_HEADER 1
+
+struct brcm_raw_header *brcm_header = NULL;
 
 enum bayer_order {
 	//Carefully ordered so that an hflip is ^1,
@@ -109,7 +116,7 @@ struct sensor_def
 #include "ov5647_modes.h"
 #include "imx219_modes.h"
 
-struct sensor_def *sensors[] = {
+const struct sensor_def *sensors[] = {
 	&ov5647,
 	&imx219,
 	NULL
@@ -126,7 +133,7 @@ struct sensor_def *sensors[] = {
 	#define BIT_DEPTH 10
 #endif
 
-void update_regs(struct sensor_def *sensor, struct mode_def *mode, int hflip, int vflip, int exposure, int gain);
+void update_regs(const struct sensor_def *sensor, struct mode_def *mode, int hflip, int vflip, int exposure, int gain);
 
 static int i2c_rd(int fd, uint8_t i2c_addr, uint16_t reg, uint8_t *values, uint32_t n)
 {
@@ -158,11 +165,11 @@ static int i2c_rd(int fd, uint8_t i2c_addr, uint16_t reg, uint8_t *values, uint3
 	return 0;
 }
 
-struct sensor_def * probe_sensor(void)
+const struct sensor_def * probe_sensor(void)
 {
 	int fd;
-	struct sensor_def **sensor_list = &sensors[0];
-	struct sensor_def *sensor = NULL;
+	const struct sensor_def **sensor_list = &sensors[0];
+	const struct sensor_def *sensor = NULL;
 
 	fd = open("/dev/i2c-0", O_RDWR);
 	if (!fd)
@@ -192,7 +199,7 @@ struct sensor_def * probe_sensor(void)
 	return sensor;
 }
 
-void start_camera_streaming(struct sensor_def *sensor, struct mode_def *mode)
+void start_camera_streaming(const struct sensor_def *sensor, struct mode_def *mode)
 {
 	int fd, i;
 
@@ -220,7 +227,7 @@ void start_camera_streaming(struct sensor_def *sensor, struct mode_def *mode)
 	close(fd);
 }
 
-void stop_camera_streaming(struct sensor_def *sensor)
+void stop_camera_streaming(const struct sensor_def *sensor)
 {
 	int fd, i;
 	fd = open("/dev/i2c-0", O_RDWR);
@@ -265,6 +272,8 @@ static void callback(MMAL_PORT_T *port, MMAL_BUFFER_HEADER_T *buffer)
 			file = fopen(filename, "wb");
 			if(file)
 			{
+				if (WRITE_HEADER)
+					fwrite(brcm_header, BRCM_RAW_HEADER_LENGTH, 1, file);
 				fwrite(buffer->data, buffer->length, 1, file);
 				fclose(file);
 			}
@@ -334,7 +343,7 @@ int main(int argc, char** args) {
 	int exposure = -1;
 	int gain = -1;
 	uint32_t encoding;
-	struct sensor_def *sensor;
+	const struct sensor_def *sensor;
 	struct mode_def *sensor_mode = NULL;
 
 	bcm_host_init();
@@ -525,6 +534,55 @@ int main(int argc, char** args) {
 
 	if (CAPTURE)
 	{
+		if (WRITE_HEADER)
+		{
+			brcm_header = (struct brcm_raw_header*)malloc(BRCM_RAW_HEADER_LENGTH);
+			if (brcm_header)
+			{
+				memset(brcm_header, 0, BRCM_RAW_HEADER_LENGTH);
+				brcm_header->id = BRCM_ID_SIG;
+				brcm_header->version = HEADER_VERSION;
+				brcm_header->mode.width = sensor_mode->width;
+				brcm_header->mode.height = sensor_mode->height;
+				//FIXME: Ought to check that the sensor is producing
+				//Bayer rather than just assuming.
+				brcm_header->mode.format = VC_IMAGE_BAYER;
+				switch(sensor_mode->order)
+				{
+					case BAYER_ORDER_BGGR:
+						brcm_header->mode.bayer_order = VC_IMAGE_BAYER_BGGR;
+						break;
+					case BAYER_ORDER_GBRG:
+						brcm_header->mode.bayer_order = VC_IMAGE_BAYER_GBRG;
+						break;
+					case BAYER_ORDER_GRBG:
+						brcm_header->mode.bayer_order = VC_IMAGE_BAYER_GRBG;
+						break;
+					case BAYER_ORDER_RGGB:
+						brcm_header->mode.bayer_order = VC_IMAGE_BAYER_RGGB;
+						break;
+				}
+				switch(BIT_DEPTH)
+				{
+					case 8:
+						brcm_header->mode.bayer_format = VC_IMAGE_BAYER_RAW8;
+						break;
+					case 10:
+						brcm_header->mode.bayer_format = VC_IMAGE_BAYER_RAW10;
+						break;
+					case 12:
+						brcm_header->mode.bayer_format = VC_IMAGE_BAYER_RAW12;
+						break;
+					case 14:
+						brcm_header->mode.bayer_format = VC_IMAGE_BAYER_RAW14;
+						break;
+					case 16:
+						brcm_header->mode.bayer_format = VC_IMAGE_BAYER_RAW16;
+						break;
+				}
+			}
+		}
+
 		status = mmal_port_parameter_set_boolean(output, MMAL_PARAMETER_ZERO_COPY, MMAL_TRUE);
 		if(status != MMAL_SUCCESS)
 		{
@@ -644,6 +702,8 @@ pool_destroy:
 		mmal_connection_destroy(rawcam_isp);
 	}
 component_disable:
+	if (brcm_header)
+		free(brcm_header);
 	status = mmal_component_disable(render);
 	if(status != MMAL_SUCCESS)
 	{
@@ -716,7 +776,7 @@ void modReg(struct mode_def *mode, uint16_t reg, int startBit, int endBit, int v
 	}
 }
 
-void update_regs(struct sensor_def *sensor, struct mode_def *mode, int hflip, int vflip, int exposure, int gain)
+void update_regs(const struct sensor_def *sensor, struct mode_def *mode, int hflip, int vflip, int exposure, int gain)
 {
 	if (sensor->vflip_reg)
 	{
