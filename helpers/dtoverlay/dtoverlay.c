@@ -1550,8 +1550,36 @@ int dtoverlay_find_phandle(DTBLOB_T *dtb, int phandle)
    return fdt_node_offset_by_phandle(dtb->fdt, phandle);
 }
 
+int dtoverlay_find_symbol(DTBLOB_T *dtb, const char *symbol_name)
+{
+   int symbols_off, path_len;
+   const char *node_path;
+
+   node_path = dtoverlay_get_alias(dtb, symbol_name);
+
+   if (node_path)
+   {
+      path_len = strlen(node_path);
+   }
+   else
+   {
+      symbols_off = fdt_path_offset(dtb->fdt, "/__symbols__");
+
+      if (symbols_off < 0)
+      {
+         dtoverlay_error("No symbols found");
+         return -FDT_ERR_NOTFOUND;
+      }
+
+      node_path = fdt_getprop(dtb->fdt, symbols_off, symbol_name, &path_len);
+      if (path_len < 0)
+         return -FDT_ERR_NOTFOUND;
+   }
+   return fdt_path_offset_namelen(dtb->fdt, node_path, path_len);
+}
+
 int dtoverlay_find_matching_node(DTBLOB_T *dtb, const char **node_names,
-				 int pos)
+                                 int pos)
 {
    while (1)
    {
@@ -1577,18 +1605,45 @@ int dtoverlay_find_matching_node(DTBLOB_T *dtb, const char **node_names,
    return -1;
 }
 
+int dtoverlay_node_is_enabled(DTBLOB_T *dtb, int pos)
+{
+   if (pos >= 0)
+   {
+      const void *prop = dtoverlay_get_property(dtb, pos, "status", NULL);
+      if (prop &&
+          ((strcmp((const char *)prop, "okay") == 0) ||
+           (strcmp((const char *)prop, "ok") == 0)))
+         return 1;
+   }
+   return 0;
+}
+
 const void *dtoverlay_get_property(DTBLOB_T *dtb, int pos, const char *prop_name, int *prop_len)
 {
    return fdt_getprop(dtb->fdt, pos, prop_name, prop_len);
 }
 
+int dtoverlay_set_property(DTBLOB_T *dtb, int pos,
+                           const char *prop_name, const void *prop, int prop_len)
+{
+   int err = fdt_setprop(dtb->fdt, pos, prop_name, prop, prop_len);
+   if (err < 0)
+      dtoverlay_error("Failed to set property '%s'", prop_name);
+   return err;
+}
+
 const char *dtoverlay_get_alias(DTBLOB_T *dtb, const char *alias_name)
 {
    int node_off;
+   int prop_len;
+   const char *alias;
 
    node_off = fdt_path_offset(dtb->fdt, "/aliases");
 
-   return fdt_getprop(dtb->fdt, node_off, alias_name, NULL);
+   alias = fdt_getprop(dtb->fdt, node_off, alias_name, &prop_len);
+   if (alias && !prop_len)
+       alias = "";
+   return alias;
 }
 
 int dtoverlay_set_alias(DTBLOB_T *dtb, const char *alias_name, const char *value)
